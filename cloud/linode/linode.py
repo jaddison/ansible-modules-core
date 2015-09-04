@@ -37,6 +37,16 @@ options:
      - To keep sanity on the Linode Web Console, name is prepended with LinodeID_
     default: null
     type: string
+  prefix_name:
+    description:
+     - Bool, prefix the instance name with 'LinodeID_'
+    default: "yes"
+    choices: [ "yes", "no" ]
+  display_group:
+    description:
+     - Display Group in which to place the instance (alphanumeric, dashes, underscore)
+    default: null
+    type: string
   linode_id:
     description:
      - Unique ID of a linode server
@@ -69,6 +79,11 @@ options:
      - swap size in MB
     default: 512
     type: integer
+  add_private_ip:
+    description:
+     - "Bool, add an additional, private network interface to instance for inter-node communication"
+    default: "no"
+    choices: [ "yes", "no" ]
   distribution:
     description:
      - distribution to use for the instance (Linode Distribution)
@@ -103,12 +118,15 @@ EXAMPLES = '''
      module: linode
      api_key: 'longStringFromLinodeApi'
      name: linode-test1
+     prefix_name: yes
+     display_group: 'Production'
      plan: 1
      datacenter: 2
      distribution: 99
      password: 'superSecureRootPassword'
      ssh_pub_key: 'ssh-rsa qwerty'
      swap: 768
+     add_private_ip: True
      wait: yes
      wait_timeout: 600
      state: present
@@ -118,6 +136,8 @@ EXAMPLES = '''
      module: linode
      api_key: 'longStringFromLinodeApi'
      name: linode-test1
+     prefix_name: yes
+     display_group: 'Production'
      linode_id: 12345678
      plan: 1
      datacenter: 2
@@ -125,6 +145,7 @@ EXAMPLES = '''
      password: 'superSecureRootPassword'
      ssh_pub_key: 'ssh-rsa qwerty'
      swap: 768
+     add_private_ip: True
      wait: yes
      wait_timeout: 600
      state: present
@@ -214,8 +235,9 @@ def getInstanceDetails(api, server):
                                         'ip_id': ip['IPADDRESSID']})
     return instance
 
-def linodeServers(module, api, state, name, plan, distribution, datacenter, linode_id, 
-                  payment_term, password, ssh_pub_key, swap, wait, wait_timeout):
+def linodeServers(module, api, state, name, prefix_name, display_group, plan,
+                  distribution, datacenter, linode_id, payment_term, password,
+                  ssh_pub_key, swap, add_private_ip, wait, wait_timeout):
     instances = []
     changed = False
     new_server = False   
@@ -255,8 +277,22 @@ def linodeServers(module, api, state, name, plan, distribution, datacenter, lino
                 res = api.linode_create(DatacenterID=datacenter, PlanID=plan, 
                                         PaymentTerm=payment_term)
                 linode_id = res['LinodeID']
+
                 # Update linode Label to match name
-                api.linode_update(LinodeId=linode_id, Label='%s_%s' % (linode_id, name))
+                if prefix_name:
+                    label = '{0}_{1}'.format(linode_id, name)
+                else:
+                    label = name
+
+                optionals = {}
+                if display_group:
+                    optionals['lpm_displayGroup'] = display_group
+
+                api.linode_update(LinodeId=linode_id, Label=label, **optionals)
+
+                if add_private_ip:
+                    api.linode_ip_addprivate(linode_id)
+
                 # Save server
                 servers = api.linode_list(LinodeId=linode_id)
             except Exception, e:
@@ -445,6 +481,8 @@ def main():
                                                      'restarted']),
             api_key = dict(),
             name = dict(type='str'),
+            prefix_name = dict(type='bool', default=True),
+            display_group = dict(type='str'),
             plan = dict(type='int'),
             distribution = dict(type='int'),
             datacenter = dict(type='int'),
@@ -453,6 +491,7 @@ def main():
             password = dict(type='str'),
             ssh_pub_key = dict(type='str'),
             swap = dict(type='int', default=512),
+            add_private_ip = dict(type='bool', default=False),
             wait = dict(type='bool', default=True),
             wait_timeout = dict(default=300),
         )
@@ -466,6 +505,8 @@ def main():
     state = module.params.get('state')
     api_key = module.params.get('api_key')
     name = module.params.get('name')
+    prefix_name = module.params.get('prefix_name')
+    display_group = module.params.get('display_group')
     plan = module.params.get('plan')
     distribution = module.params.get('distribution')
     datacenter = module.params.get('datacenter')
@@ -474,6 +515,7 @@ def main():
     password = module.params.get('password')
     ssh_pub_key = module.params.get('ssh_pub_key')
     swap = module.params.get('swap')
+    add_private_ip = module.params.get('add_private_ip')
     wait = module.params.get('wait')
     wait_timeout = int(module.params.get('wait_timeout'))
 
@@ -491,8 +533,9 @@ def main():
     except Exception, e:
         module.fail_json(msg = '%s' % e.value[0]['ERRORMESSAGE'])
 
-    linodeServers(module, api, state, name, plan, distribution, datacenter, linode_id, 
-                 payment_term, password, ssh_pub_key, swap, wait, wait_timeout)
+    linodeServers(module, api, state, name, prefix_name, display_group, plan,
+                  distribution, datacenter, linode_id, payment_term, password,
+                  ssh_pub_key, swap, add_private_ip, wait, wait_timeout)
 
 # import module snippets
 from ansible.module_utils.basic import *
