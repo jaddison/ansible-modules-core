@@ -291,7 +291,7 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
                 api.linode_update(LinodeId=linode_id, Label=label, **optionals)
 
                 if add_private_ip:
-                    api.linode_ip_addprivate(linode_id)
+                    api.linode_ip_addprivate(LinodeId=linode_id)
 
                 # Save server
                 servers = api.linode_list(LinodeId=linode_id)
