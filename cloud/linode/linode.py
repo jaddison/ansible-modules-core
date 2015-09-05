@@ -246,20 +246,34 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
     configs = []
     jobs = []
 
-    # See if we can match an existing server details with the provided linode_id
-    if linode_id:
+    all_servers = api.linode_list()
+
+    def _get_server_info(linode_id):
         # For the moment we only consider linode_id as criteria for match
         # Later we can use more (size, name, etc.) and update existing
-        servers = api.linode_list(LinodeId=linode_id)
-        # Attempt to fetch details about disks and configs only if servers are 
+        _servers = api.linode_list(LinodeId=linode_id)
+        # Attempt to fetch details about disks and configs only if servers are
         # found with linode_id
-        if servers:
-            disks = api.linode_disk_list(LinodeId=linode_id)
-            configs = api.linode_config_list(LinodeId=linode_id)
+        _disks = _configs = []
+        if _servers:
+            _disks = api.linode_disk_list(LinodeId=linode_id)
+            _configs = api.linode_config_list(LinodeId=linode_id)
+        return _servers, _disks, _configs
+
+    # See if we can match an existing server details with the provided linode_id
+    if linode_id:
+        servers, disks, configs = _get_server_info(linode_id)
 
     # Act on the state
     if state in ('active', 'present', 'started'):
         # TODO: validate all the plan / distribution / datacenter are valid
+
+        # this provides indempotence - at least at the Linode node Label level.
+        if not servers and name:
+            for _server in all_servers:
+                if name == _server['LABEL']:
+                    servers, disks, configs = _get_server_info(_server['LINODEID'])
+                    break
 
         # Multi step process/validation:
         #  - need linode_id (entity)
