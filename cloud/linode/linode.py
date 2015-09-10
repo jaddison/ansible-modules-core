@@ -39,7 +39,7 @@ options:
     type: string
   prefix_name:
     description:
-     - Bool, prefix the instance name with 'LinodeID_'
+     - Bool, prefix the instance name with the Linode's ID - ie. '<linode_id>-'
     default: "yes"
     choices: [ "yes", "no" ]
   display_group:
@@ -211,29 +211,6 @@ def randompass():
     p = lower + upper + number + punct
     return ''.join(random.sample(p, len(p)))
 
-def getInstanceDetails(api, server):
-    '''
-    Return the details of an instance, populating IPs, etc.
-    '''
-    instance = {'id': server['LINODEID'],
-                'name': server['LABEL'],
-                'public': [],
-                'private': []}
-
-    # Populate with ips
-    for ip in api.linode_ip_list(LinodeId=server['LINODEID']):
-        if ip['ISPUBLIC'] and 'ipv4' not in instance:
-            instance['ipv4'] = ip['IPADDRESS']
-            instance['fqdn'] = ip['RDNS_NAME']
-        if ip['ISPUBLIC']:
-            instance['public'].append({'ipv4': ip['IPADDRESS'],
-                                       'fqdn': ip['RDNS_NAME'],
-                                       'ip_id': ip['IPADDRESSID']})
-        else:
-            instance['private'].append({'ipv4': ip['IPADDRESS'],
-                                        'fqdn': ip['RDNS_NAME'],
-                                        'ip_id': ip['IPADDRESSID']})
-    return instance
 
 def linodeServers(module, api, state, name, prefix_name, display_group, plan,
                   distribution, datacenter, linode_id, payment_term, password,
@@ -241,39 +218,28 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
     instances = []
     changed = False
     new_server = False   
-    servers = []
     disks = []
     configs = []
     jobs = []
 
-    all_servers = api.linode_list()
+    # Update linode Label to match name
+    if prefix_name:
+        label = '{0}-{1}'.format(linode_id, name)
+    else:
+        label = name
 
-    def _get_server_info(linode_id):
-        # For the moment we only consider linode_id as criteria for match
-        # Later we can use more (size, name, etc.) and update existing
-        _servers = api.linode_list(LinodeId=linode_id)
-        # Attempt to fetch details about disks and configs only if servers are
-        # found with linode_id
-        _disks = _configs = []
-        if _servers:
-            _disks = api.linode_disk_list(LinodeId=linode_id)
-            _configs = api.linode_config_list(LinodeId=linode_id)
-        return _servers, _disks, _configs
+    servers = linode_find_node(api, linode_id, label)
+    servers = [servers] if servers else []
 
     # See if we can match an existing server details with the provided linode_id
-    if linode_id:
-        servers, disks, configs = _get_server_info(linode_id)
+    if servers:
+        linode_id = servers[0]['LINODEID']
+        disks = api.linode_disk_list(LinodeId=servers[0]['LINODEID'])
+        configs = api.linode_config_list(LinodeId=servers[0]['LINODEID'])
 
     # Act on the state
     if state in ('active', 'present', 'started'):
         # TODO: validate all the plan / distribution / datacenter are valid
-
-        # this provides indempotence - at least at the Linode node Label level.
-        if not servers and name:
-            for _server in all_servers:
-                if name == _server['LABEL']:
-                    servers, disks, configs = _get_server_info(_server['LINODEID'])
-                    break
 
         # Multi step process/validation:
         #  - need linode_id (entity)
@@ -291,12 +257,6 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
                 res = api.linode_create(DatacenterID=datacenter, PlanID=plan, 
                                         PaymentTerm=payment_term)
                 linode_id = res['LinodeID']
-
-                # Update linode Label to match name
-                if prefix_name:
-                    label = '{0}_{1}'.format(linode_id, name)
-                else:
-                    label = name
 
                 optionals = {}
                 if display_group:
@@ -419,7 +379,7 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
                                  (server['LABEL'], server['LINODEID']))
             # From now on we know the task is a success
             # Build instance report
-            instance = getInstanceDetails(api, server)
+            instance = linode_get_instance_details(api, server)
             # depending on wait flag select the status
             if wait:
                 instance['status'] = 'Running'
@@ -432,7 +392,7 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
                 instance['password'] = password
             instances.append(instance)
 
-    elif state in ('stopped'):
+    elif state in ('stopped',):
         for arg in ('name', 'linode_id'):
             if not eval(arg):
                 module.fail_json(msg='%s is required for active state' % arg)
@@ -441,7 +401,7 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
             module.fail_json(msg = 'Server %s (lid: %s) not found' % (name, linode_id))
 
         for server in servers:
-            instance = getInstanceDetails(api, server)
+            instance = linode_get_instance_details(api, server)
             if server['STATUS'] != 2:
                 try:
                     res = api.linode_shutdown(LinodeId=linode_id)
@@ -453,7 +413,7 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
                 instance['status'] = 'Stopped'
             instances.append(instance)
 
-    elif state in ('restarted'):
+    elif state in ('restarted',):
         for arg in ('name', 'linode_id'):
             if not eval(arg):
                 module.fail_json(msg='%s is required for active state' % arg)
@@ -462,7 +422,7 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
             module.fail_json(msg = 'Server %s (lid: %s) not found' % (name, linode_id))
 
         for server in servers:
-            instance = getInstanceDetails(api, server)
+            instance = linode_get_instance_details(api, server)
             try:
                 res = api.linode_reboot(LinodeId=server['LINODEID'])
             except Exception, e:
@@ -473,7 +433,7 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
             
     elif state in ('absent', 'deleted'):
         for server in servers:
-            instance = getInstanceDetails(api, server)
+            instance = linode_get_instance_details(api, server)
             try:
                 api.linode_delete(LinodeId=server['LINODEID'], skipChecks=True)
             except Exception, e:
@@ -489,25 +449,25 @@ def linodeServers(module, api, state, name, prefix_name, display_group, plan,
 
 def main():
     module = AnsibleModule(
-        argument_spec = dict(
-            state = dict(default='present', choices=['active', 'present', 'started',
-                                                     'deleted', 'absent', 'stopped',
-                                                     'restarted']),
-            api_key = dict(),
-            name = dict(type='str'),
-            prefix_name = dict(type='bool', default=True),
-            display_group = dict(type='str'),
-            plan = dict(type='int'),
-            distribution = dict(type='int'),
-            datacenter = dict(type='int'),
-            linode_id = dict(type='int', aliases=['lid']),
-            payment_term = dict(type='int', default=1, choices=[1, 12, 24]),
-            password = dict(type='str'),
-            ssh_pub_key = dict(type='str'),
-            swap = dict(type='int', default=512),
-            add_private_ip = dict(type='bool', default=False),
-            wait = dict(type='bool', default=True),
-            wait_timeout = dict(default=300),
+        argument_spec=dict(
+            state=dict(default='present', choices=['active', 'present', 'started',
+                                                   'deleted', 'absent', 'stopped',
+                                                   'restarted']),
+            api_key=dict(),
+            name=dict(type='str'),
+            prefix_name=dict(type='bool', default=True),
+            display_group=dict(type='str'),
+            plan=dict(type='int'),
+            distribution=dict(type='int'),
+            datacenter=dict(type='int'),
+            linode_id=dict(type='int', aliases=['lid']),
+            payment_term=dict(type='int', default=1, choices=[1, 12, 24]),
+            password=dict(type='str'),
+            ssh_pub_key=dict(type='str'),
+            swap=dict(type='int', default=512),
+            add_private_ip=dict(type='bool', default=False),
+            wait=dict(type='bool', default=True),
+            wait_timeout=dict(default=300),
         )
     )
 
@@ -553,6 +513,7 @@ def main():
 
 # import module snippets
 from ansible.module_utils.basic import *
+from ansible.module_utils.linode import *
 
 if __name__ == '__main__':
     main()
